@@ -1,0 +1,178 @@
+-- ===================================================================================
+-- 1 & 2. DATABASE ARCHITECTURE, CONCEPTUAL MODELING, & NORMALIZATION (3NF)
+-- ===================================================================================
+DROP VIEW IF EXISTS Global_Rolling_Averages_Dashboard;
+DROP TRIGGER IF EXISTS trg_audit_critical_aqi_violations;
+DROP TABLE IF EXISTS Climate_Uncertainty_Probability_Models;
+DROP TABLE IF EXISTS Emission_Cap_Temporal_History;
+DROP TABLE IF EXISTS Distributed_EcoZone_Shard_Logs;
+DROP TABLE IF EXISTS High_Velocity_Telemetry_Streams;
+DROP TABLE IF EXISTS Climate_Sensors;
+DROP TABLE IF EXISTS Eco_Zones;
+DROP TABLE IF EXISTS Pollutant_Registry;
+
+CREATE TABLE Pollutant_Registry (
+    pollutant_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chemical_formula TEXT NOT NULL UNIQUE CHECK(length(chemical_formula) <= 5),
+    critical_threshold_ppm REAL NOT NULL CHECK(critical_threshold_ppm > 0.0)
+);
+
+CREATE TABLE Eco_Zones (
+    zone_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_code TEXT NOT NULL UNIQUE CHECK(length(zone_code) = 6),
+    geographic_continent TEXT NOT NULL CHECK(geographic_continent IN ('NORTH_AMERICA', 'EUROPE', 'ASIA', 'AFRICA')),
+    baseline_target_aqi INTEGER NOT NULL CHECK(baseline_target_aqi BETWEEN 0 AND 500)
+);
+
+CREATE TABLE Climate_Sensors (
+    sensor_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_uuid TEXT NOT NULL UNIQUE CHECK(length(sensor_uuid) = 36),
+    zone_id INTEGER NOT NULL,
+    latitude REAL NOT NULL CHECK(latitude BETWEEN -90.0 AND 90.0),
+    longitude REAL NOT NULL CHECK(longitude BETWEEN -180.0 AND 180.0),
+    is_operational INTEGER NOT NULL CHECK(is_operational IN (0, 1)) DEFAULT 1,
+    FOREIGN KEY (zone_id) REFERENCES Eco_Zones(zone_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE High_Velocity_Telemetry_Streams (
+    telemetry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id INTEGER NOT NULL,
+    pollutant_id INTEGER NOT NULL,
+    observed_value_ppm REAL NOT NULL CHECK(observed_value_ppm >= 0.0),
+    computed_aqi_index INTEGER NOT NULL CHECK(computed_aqi_index BETWEEN 0 AND 500),
+    stream_status TEXT NOT NULL DEFAULT 'NORMAL' CHECK(stream_status IN ('NORMAL', 'WARNING', 'CRITICAL_EXCEEDED')),
+    recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sensor_id) REFERENCES Climate_Sensors(sensor_id) ON DELETE RESTRICT,
+    FOREIGN KEY (pollutant_id) REFERENCES Pollutant_Registry(pollutant_id) ON DELETE RESTRICT
+);
+
+-- Seed System Production Baselines
+INSERT INTO Pollutant_Registry (chemical_formula, critical_threshold_ppm) VALUES ('PM2.5', 35.4);
+INSERT INTO Pollutant_Registry (chemical_formula, critical_threshold_ppm) VALUES ('NO2', 0.10);
+INSERT INTO Pollutant_Registry (chemical_formula, critical_threshold_ppm) VALUES ('O3', 0.07);
+
+INSERT INTO Eco_Zones (zone_code, geographic_continent, baseline_target_aqi) VALUES ('EZ-AM1', 'NORTH_AMERICA', 50);
+INSERT INTO Eco_Zones (zone_code, geographic_continent, baseline_target_aqi) VALUES ('EZ-AS1', 'ASIA', 100);
+INSERT INTO Eco_Zones (zone_code, geographic_continent, baseline_target_aqi) VALUES ('EZ-EU1', 'EUROPE', 45);
+
+INSERT INTO Climate_Sensors (sensor_uuid, zone_id, latitude, longitude, is_operational) VALUES ('4a8b2c1d-9e0f-4a3b-8c1d-2e3f4a5b6c7d', 1, 40.7128, -74.0060, 1);
+INSERT INTO Climate_Sensors (sensor_uuid, zone_id, latitude, longitude, is_operational) VALUES ('9f8e7d6c-5b4a-3b2c-1d0e-9f8e7d6c5b4a', 2, 35.6762, 139.6503, 1);
+INSERT INTO Climate_Sensors (sensor_uuid, zone_id, latitude, longitude, is_operational) VALUES ('1a2b3c4d-5e6f-7a8b-9c0d-1e2f3g4h5i6j', 3, 48.8566, 2.3522, 1);
+
+INSERT INTO High_Velocity_Telemetry_Streams (sensor_id, pollutant_id, observed_value_ppm, computed_aqi_index, stream_status) VALUES (1, 1, 12.5, 42, 'NORMAL');
+INSERT INTO High_Velocity_Telemetry_Streams (sensor_id, pollutant_id, observed_value_ppm, computed_aqi_index, stream_status) VALUES (2, 1, 155.4, 205, 'NORMAL');
+
+-- ===================================================================================
+-- 3 & 4. RELATIONAL ALGEBRA, INDEXING, & QUERY OPTIMIZATION
+-- ===================================================================================
+CREATE INDEX idx_telemetry_metrics ON High_Velocity_Telemetry_Streams(computed_aqi_index, observed_value_ppm);
+CREATE INDEX idx_sensor_spatial ON Climate_Sensors(zone_id, is_operational);
+
+-- ===================================================================================
+-- 6 & 7. DATABASE SECURITY, ADMINISTRATION, BACKUPS & RECOVERY
+-- ===================================================================================
+CREATE VIEW Global_Rolling_Averages_Dashboard AS
+SELECT substr(cs.sensor_uuid, 1, 8) || '-XXXX-XXXX-XXXX-XXXXXXXXXXXX' AS anonymized_sensor,
+       ez.zone_code,
+       COUNT(hvts.telemetry_id) AS aggregated_readings_count,
+       ROUND(AVG(hvts.observed_value_ppm), 4) AS rolling_mean_ppm,
+       ROUND(AVG(hvts.computed_aqi_index), 2) AS rolling_mean_aqi
+FROM Climate_Sensors cs
+LEFT JOIN High_Velocity_Telemetry_Streams hvts ON cs.sensor_id = hvts.sensor_id
+LEFT JOIN Eco_Zones ez ON cs.zone_id = ez.zone_id
+GROUP BY cs.sensor_id;
+
+-- ===================================================================================
+-- 8. DISTRIBUTED DATABASES (ECO-ZONE SHARD ROUTING LOGS)
+-- ===================================================================================
+CREATE TABLE Distributed_EcoZone_Shard_Logs (
+    routing_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_regional_node TEXT NOT NULL CHECK (target_regional_node IN ('SHARD_NODE_AMER', 'SHARD_NODE_ASIA', 'SHARD_NODE_EMEA', 'SHARD_AUDIT_LEDGER')),
+    transaction_payload TEXT,
+    processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ===================================================================================
+-- 9. PROBABILISTIC DATABASES (STOCHASTIC CLIMATE FORECASTING RISK MODEL)
+-- ===================================================================================
+CREATE TABLE Climate_Uncertainty_Probability_Models (
+    model_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pollutant_id INTEGER NOT NULL,
+    projected_acidification_index REAL NOT NULL,
+    probability_weight REAL NOT NULL CHECK(probability_weight BETWEEN 0.00 AND 1.00),
+    FOREIGN KEY (pollutant_id) REFERENCES Pollutant_Registry(pollutant_id)
+);
+
+INSERT INTO Climate_Uncertainty_Probability_Models (pollutant_id, projected_acidification_index, probability_weight) VALUES (1, 0.0, 0.80);
+INSERT INTO Climate_Uncertainty_Probability_Models (pollutant_id, projected_acidification_index, probability_weight) VALUES (1, 4.2, 0.15);
+INSERT INTO Climate_Uncertainty_Probability_Models (pollutant_id, projected_acidification_index, probability_weight) VALUES (1, 18.5, 0.05);
+
+-- ===================================================================================
+-- 10. TEMPORAL DATABASES (BI-TEMPORAL ENVIRONMENT REGULATIONS RECORD)
+-- ===================================================================================
+CREATE TABLE Emission_Cap_Temporal_History (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id INTEGER NOT NULL,
+    max_allowable_co2_tons INTEGER NOT NULL,
+    valid_from TEXT NOT NULL,
+    valid_to TEXT NOT NULL
+);
+
+INSERT INTO Emission_Cap_Temporal_History (zone_id, max_allowable_co2_tons, valid_from, valid_to) VALUES (1, 50000, '2026-01-01 00:00:00', '2026-10-15 23:59:59');
+INSERT INTO Emission_Cap_Temporal_History (zone_id, max_allowable_co2_tons, valid_from, valid_to) VALUES (1, 35000, '2026-10-16 00:00:00', '9999-12-31 23:59:59');
+
+-- ===================================================================================
+-- 11. SUPPORTING CONCEPTS (TRIGGERS & ASYNCHRONOUS DATA-DRIVEN EVENTS)
+-- ===================================================================================
+CREATE TRIGGER trg_audit_critical_aqi_violations
+AFTER UPDATE ON High_Velocity_Telemetry_Streams
+FOR EACH ROW
+WHEN NEW.stream_status = 'CRITICAL_EXCEEDED'
+BEGIN
+    INSERT INTO Distributed_EcoZone_Shard_Logs (target_regional_node, transaction_payload)
+    VALUES ('SHARD_AUDIT_LEDGER', 'CRITICAL ALARM: AQI Target Threshold Violated! Sensor ID: ' || NEW.sensor_id || ' shifted to index value: ' || NEW.computed_aqi_index || '.');
+END;
+
+-- ===================================================================================
+-- 5. TRANSACTION MANAGEMENT & DATA INGESTION ENGINE RUN
+-- ===================================================================================
+BEGIN IMMEDIATE TRANSACTION;
+    INSERT INTO High_Velocity_Telemetry_Streams (sensor_id, pollutant_id, observed_value_ppm, computed_aqi_index, stream_status)
+    VALUES (3, 3, 0.12, 160, 'WARNING');
+
+    UPDATE High_Velocity_Telemetry_Streams 
+    SET stream_status = 'CRITICAL_EXCEEDED', computed_aqi_index = 245
+    WHERE computed_aqi_index > 200;
+COMMIT;
+
+-- ===================================================================================
+-- FINAL UNIFIED DATA REPORTING INTERFACE 
+-- ===================================================================================
+-- This multi-table JOIN output pulls from every architectural layer simultaneously.
+-- Because this is the LAST statement in the script, SQLiteOnline will display 
+-- this fully populated data grid automatically inside your browser window.
+SELECT 
+    v.anonymized_sensor,
+    v.zone_code,
+    v.rolling_mean_aqi AS active_metrics_aqi,
+    t.max_allowable_co2_tons AS temporal_emission_cap,
+    p.expected_environmental_damage_index AS stochastic_risk_factor,
+    l.target_regional_node AS distributed_routing_target,
+    l.transaction_payload AS asynchronous_trigger_payload
+FROM Global_Rolling_Averages_Dashboard v
+JOIN Emission_Cap_Temporal_History t ON t.zone_id = 1 AND '2026-10-16 07:00:00' BETWEEN t.valid_from AND t.valid_to
+JOIN (
+    SELECT pollutant_id, ROUND(SUM(projected_acidification_index * probability_weight) / SUM(probability_weight), 2) AS expected_environmental_damage_index
+    FROM Climate_Uncertainty_Probability_Models GROUP BY pollutant_id
+) p ON p.pollutant_id = 1
+	LEFT JOIN Distributed_EcoZone_Shard_Logs l ON l.target_regional_node = 'SHARD_AUDIT_LEDGER';
+
+
+SELECT * FROM Pollutant_Registry;
+SELECT * FROM Eco_Zones;
+SELECT * FROM Climate_Sensors;
+SELECT * FROM High_Velocity_Telemetry_Streams;
+SELECT * FROM Distributed_EcoZone_Shard_Logs; 
+SELECT * FROM Climate_Uncertainty_Probability_Models; 
+SELECT * FROM Emission_Cap_Temporal_History;
+SELECT * FROM sqlite_sequence;
